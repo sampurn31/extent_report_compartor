@@ -20,18 +20,26 @@ import {
   IconButton,
   InputAdornment,
   Stack,
-  Tabs,
-  Tab,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Checkbox,
+  FormControlLabel,
+  FormGroup,
   Tooltip,
-  Drawer
+  Drawer,
+  Divider
 } from '@mui/material';
 import {
   Search as SearchIcon,
   Upload as UploadIcon,
   Delete as DeleteIcon,
+  FilterList as FilterIcon,
+  Sort as SortIcon,
+  Close as CloseIcon,
   TrendingDown,
   TrendingUp,
-  Close as CloseIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 
@@ -48,8 +56,14 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [analysisResults, setAnalysisResults] = useState(null);
   const [searchResults, setSearchResults] = useState(null);
-  const [activeTab, setActiveTab] = useState(0);
   const [isSearchDrawerOpen, setIsSearchDrawerOpen] = useState(false);
+  const [selectedReports, setSelectedReports] = useState([]);
+  const [sortBy, setSortBy] = useState('failureCount');
+  const [filterOptions, setFilterOptions] = useState({
+    showOnlyMultipleFailures: false,
+    showOnlyConsistentFailures: false,
+    minFailureCount: 1
+  });
   const fileInputRef = useRef(null);
 
   const formatFileSize = (bytes) => {
@@ -100,6 +114,7 @@ function App() {
     );
     
     setFiles(uniqueFiles);
+    setSelectedReports(uniqueFiles.map(f => f.name));
     // Reset the file input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -108,6 +123,7 @@ function App() {
 
   const handleRemoveFile = (fileToRemove) => {
     setFiles(files.filter(file => file !== fileToRemove));
+    setSelectedReports(selectedReports.filter(name => name !== fileToRemove.name));
   };
 
   const handleUpload = async () => {
@@ -143,12 +159,6 @@ function App() {
     files.forEach(file => formData.append('files', file));
 
     try {
-      console.log('Uploading files...', {
-        fileCount: files.length,
-        totalSize: formatFileSize(totalSize),
-        fileNames: files.map(f => f.name)
-      });
-
       const uploadResponse = await axios.post(`${API_URL}/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
@@ -157,22 +167,16 @@ function App() {
         maxBodyLength: MAX_FILE_SIZE
       });
 
-      console.log('Upload response:', uploadResponse.data);
       setUploadedFiles(files.map(f => f.name));
-
-      // Get the saved file paths from the response
       const savedFiles = uploadResponse.data.files;
-      console.log('Saved files:', savedFiles);
 
       if (!savedFiles || savedFiles.length === 0) {
         throw new Error('No files were successfully uploaded');
       }
 
-      // Use the saved file paths for analysis
       const analysisResponse = await axios.post(`${API_URL}/analyze`, {
         reportPaths: savedFiles
       });
-      console.log('Analysis response:', analysisResponse.data);
       setAnalysisResults(analysisResponse.data);
     } catch (error) {
       console.error('Error details:', error);
@@ -229,65 +233,58 @@ function App() {
     }
   };
 
-  const handleTabChange = (event, newValue) => {
-    setActiveTab(newValue);
-  };
+  const filterAndSortFailingTests = (failingTests) => {
+    if (!failingTests) return [];
 
-  const renderTestStats = (stats) => (
-    <TableContainer>
-      <Table>
-        <TableHead>
-          <TableRow>
-            <TableCell>Test Name</TableCell>
-            <TableCell align="center">Failure Count</TableCell>
-            <TableCell align="center">Total Executions</TableCell>
-            <TableCell align="center">Failure Rate</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {stats.map((test) => (
-            <TableRow key={test.name}>
-              <TableCell>{test.name}</TableCell>
-              <TableCell align="center">
-                <Chip
-                  label={test.failureCount}
-                  color={test.failureCount > 0 ? "error" : "success"}
-                  size="small"
-                />
-              </TableCell>
-              <TableCell align="center">{test.executionCount}</TableCell>
-              <TableCell align="center">
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {test.failureRate}%
-                  {test.failureRate > 50 ? (
-                    <TrendingUp color="error" sx={{ ml: 1 }} />
-                  ) : (
-                    <TrendingDown color="success" sx={{ ml: 1 }} />
-                  )}
-                </Box>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
-  );
-
-  const sortFailingTestsByCount = (failingTests) => {
-    return Object.entries(failingTests)
+    let filteredTests = Object.entries(failingTests)
       .map(([test, reports]) => ({
         test,
-        reports,
-        count: reports.length
+        reports: reports.filter(report => selectedReports.includes(report)),
+        allReports: reports
       }))
-      .sort((a, b) => b.count - a.count);
+      .filter(({ reports }) => reports.length > 0);
+
+    // Apply filters
+    if (filterOptions.showOnlyMultipleFailures) {
+      filteredTests = filteredTests.filter(({ reports }) => reports.length > 1);
+    }
+
+    if (filterOptions.showOnlyConsistentFailures) {
+      filteredTests = filteredTests.filter(({ reports, allReports }) => 
+        reports.length === selectedReports.length
+      );
+    }
+
+    if (filterOptions.minFailureCount > 1) {
+      filteredTests = filteredTests.filter(({ reports }) => 
+        reports.length >= filterOptions.minFailureCount
+      );
+    }
+
+    // Apply sorting
+    switch (sortBy) {
+      case 'failureCount':
+        filteredTests.sort((a, b) => b.reports.length - a.reports.length);
+        break;
+      case 'testName':
+        filteredTests.sort((a, b) => a.test.localeCompare(b.test));
+        break;
+      case 'failureRate':
+        filteredTests.sort((a, b) => 
+          (b.reports.length / selectedReports.length) - 
+          (a.reports.length / selectedReports.length)
+        );
+        break;
+    }
+
+    return filteredTests;
   };
 
   return (
     <Box sx={{ display: 'flex' }}>
       <Container maxWidth="lg" sx={{ py: 4 }}>
         <Typography variant="h4" gutterBottom>
-          Extent Report Analyzer
+          Test Report Analyzer
         </Typography>
 
         <Grid container spacing={3} sx={{ mb: 3 }}>
@@ -319,6 +316,7 @@ function App() {
                 setNumReports(value);
                 if (files.length > value) {
                   setFiles(files.slice(0, value));
+                  setSelectedReports(files.slice(0, value).map(f => f.name));
                 }
               }}
               fullWidth
@@ -377,75 +375,148 @@ function App() {
         {analysisResults && (
           <Card>
             <CardContent>
-              <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
-                <Tabs value={activeTab} onChange={handleTabChange}>
-                  <Tab label="Common Failing Tests" />
-                  <Tab label="By Failure Count" />
-                  <Tab label="By Failure Rate" />
-                </Tabs>
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="h6" gutterBottom>
+                  Analysis Controls
+                </Typography>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} md={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Sort By</InputLabel>
+                      <Select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value)}
+                        label="Sort By"
+                      >
+                        <MenuItem value="failureCount">Failure Count</MenuItem>
+                        <MenuItem value="testName">Test Name</MenuItem>
+                        <MenuItem value="failureRate">Failure Rate</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <FormControl fullWidth>
+                      <InputLabel>Compare Reports</InputLabel>
+                      <Select
+                        multiple
+                        value={selectedReports}
+                        onChange={(e) => setSelectedReports(e.target.value)}
+                        label="Compare Reports"
+                        renderValue={(selected) => (
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                            {selected.map((value) => (
+                              <Chip key={value} label={value} size="small" />
+                            ))}
+                          </Box>
+                        )}
+                      >
+                        {files.map((file) => (
+                          <MenuItem key={file.name} value={file.name}>
+                            <Checkbox checked={selectedReports.indexOf(file.name) > -1} />
+                            {file.name}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Filters
+                    </Typography>
+                    <FormGroup row>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={filterOptions.showOnlyMultipleFailures}
+                            onChange={(e) => setFilterOptions({
+                              ...filterOptions,
+                              showOnlyMultipleFailures: e.target.checked
+                            })}
+                          />
+                        }
+                        label="Show Only Multiple Failures"
+                      />
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={filterOptions.showOnlyConsistentFailures}
+                            onChange={(e) => setFilterOptions({
+                              ...filterOptions,
+                              showOnlyConsistentFailures: e.target.checked
+                            })}
+                          />
+                        }
+                        label="Show Only Consistent Failures"
+                      />
+                    </FormGroup>
+                    <TextField
+                      type="number"
+                      label="Minimum Failure Count"
+                      value={filterOptions.minFailureCount}
+                      onChange={(e) => setFilterOptions({
+                        ...filterOptions,
+                        minFailureCount: Math.max(1, parseInt(e.target.value) || 1)
+                      })}
+                      size="small"
+                      sx={{ mt: 1 }}
+                      InputProps={{ inputProps: { min: 1 } }}
+                    />
+                  </Grid>
+                </Grid>
               </Box>
 
-              {activeTab === 0 && (
-                <>
-                  <Typography variant="h6" gutterBottom>
-                    Common Failing Tests
-                  </Typography>
-                  <TableContainer>
-                    <Table>
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Test Name</TableCell>
-                          <TableCell>Failed in Reports</TableCell>
-                          <TableCell align="center">Failure Count</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {sortFailingTestsByCount(analysisResults.failingTests).map(({ test, reports, count }) => (
-                          <TableRow key={test}>
-                            <TableCell>{test}</TableCell>
-                            <TableCell>
-                              {reports.map((report, index) => (
-                                <Chip
-                                  key={index}
-                                  label={report}
-                                  color="error"
-                                  size="small"
-                                  sx={{ m: 0.5 }}
-                                />
-                              ))}
-                            </TableCell>
-                            <TableCell align="center">
-                              <Chip
-                                label={count}
-                                color="error"
-                                size="small"
-                              />
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </>
-              )}
+              <Divider sx={{ my: 2 }} />
 
-              {activeTab === 1 && (
-                <>
-                  <Typography variant="h6" gutterBottom>
-                    Tests Sorted by Failure Count
-                  </Typography>
-                  {renderTestStats(analysisResults.testStats.byFailureCount)}
-                </>
-              )}
-
-              {activeTab === 2 && (
-                <>
-                  <Typography variant="h6" gutterBottom>
-                    Tests Sorted by Failure Rate
-                  </Typography>
-                  {renderTestStats(analysisResults.testStats.byFailureRate)}
-                </>
-              )}
+              <Typography variant="h6" gutterBottom>
+                Test Analysis Results
+              </Typography>
+              <TableContainer>
+                <Table>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Test Name</TableCell>
+                      <TableCell>Failed in Reports</TableCell>
+                      <TableCell align="center">Failure Count</TableCell>
+                      <TableCell align="center">Failure Rate</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {filterAndSortFailingTests(analysisResults.failingTests).map(({ test, reports, allReports }) => (
+                      <TableRow key={test}>
+                        <TableCell>{test}</TableCell>
+                        <TableCell>
+                          {reports.map((report, index) => (
+                            <Chip
+                              key={index}
+                              label={report}
+                              color="error"
+                              size="small"
+                              sx={{ m: 0.5 }}
+                            />
+                          ))}
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            label={`${reports.length}/${selectedReports.length}`}
+                            color="error"
+                            size="small"
+                          />
+                        </TableCell>
+                        <TableCell align="center">
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {((reports.length / selectedReports.length) * 100).toFixed(1)}%
+                            {(reports.length / selectedReports.length) > 0.5 ? (
+                              <TrendingUp color="error" sx={{ ml: 1 }} />
+                            ) : (
+                              <TrendingDown color="success" sx={{ ml: 1 }} />
+                            )}
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             </CardContent>
           </Card>
         )}
@@ -473,53 +544,45 @@ function App() {
           </IconButton>
         </Box>
 
-        {searchResults && (
+        {searchResults && searchResults.stats.length > 0 ? (
           <>
-            {searchResults.stats.length > 0 ? (
-              <>
-                <Typography variant="subtitle2" gutterBottom>
-                  Test Statistics
-                </Typography>
-                {renderTestStats(searchResults.stats)}
-                
-                <Typography variant="subtitle2" gutterBottom sx={{ mt: 3 }}>
-                  Detailed Results
-                </Typography>
-                <TableContainer>
-                  <Table>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Test Name</TableCell>
-                        {uploadedFiles.map((file, index) => (
-                          <TableCell key={index}>{file}</TableCell>
+            <Typography variant="subtitle2" gutterBottom>
+              Matching Tests
+            </Typography>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Test Name</TableCell>
+                    <TableCell align="center">Status</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {Object.entries(searchResults.results).map(([test, statuses]) => (
+                    <TableRow key={test}>
+                      <TableCell>{test}</TableCell>
+                      <TableCell align="center">
+                        {Object.entries(statuses).map(([report, status]) => (
+                          <Tooltip key={report} title={report}>
+                            <Chip
+                              label={status.toUpperCase()}
+                              color={getStatusColor(status)}
+                              size="small"
+                              sx={{ m: 0.5 }}
+                            />
+                          </Tooltip>
                         ))}
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {Object.entries(searchResults.results).map(([test, results]) => (
-                        <TableRow key={test}>
-                          <TableCell>{test}</TableCell>
-                          {uploadedFiles.map((file, index) => (
-                            <TableCell key={index}>
-                              <Chip
-                                label={results[file] || 'N/A'}
-                                color={getStatusColor(results[file])}
-                                size="small"
-                              />
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </>
-            ) : (
-              <Typography color="text.secondary">
-                No tests found matching your search criteria
-              </Typography>
-            )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </>
+        ) : (
+          <Typography color="text.secondary">
+            No matching tests found
+          </Typography>
         )}
       </Drawer>
     </Box>
