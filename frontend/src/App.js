@@ -37,6 +37,7 @@ import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 const DRAWER_WIDTH = 400;
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 function App() {
   const [numReports, setNumReports] = useState(2);
@@ -50,6 +51,14 @@ function App() {
   const [isSearchDrawerOpen, setIsSearchDrawerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files);
     
@@ -59,8 +68,8 @@ function App() {
         alert(`File ${file.name} is empty. Please select a valid file.`);
         return false;
       }
-      if (file.size > 32 * 1024 * 1024) {
-        alert(`File ${file.name} is too large. Maximum size is 32MB.`);
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`File ${file.name} is too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(MAX_FILE_SIZE)}.`);
         return false;
       }
       if (!file.name.toLowerCase().endsWith('.html')) {
@@ -69,6 +78,13 @@ function App() {
       }
       return true;
     });
+
+    // Calculate total size
+    const totalSize = validFiles.reduce((sum, file) => sum + file.size, 0);
+    if (totalSize > MAX_FILE_SIZE) {
+      alert(`Total file size (${formatFileSize(totalSize)}) exceeds maximum allowed size (${formatFileSize(MAX_FILE_SIZE)})`);
+      return;
+    }
 
     const newFiles = [...files, ...validFiles];
     
@@ -106,11 +122,18 @@ function App() {
 
     // Validate files again before upload
     const invalidFiles = files.filter(file => 
-      file.size === 0 || file.size > 32 * 1024 * 1024 || !file.name.toLowerCase().endsWith('.html')
+      file.size === 0 || file.size > MAX_FILE_SIZE || !file.name.toLowerCase().endsWith('.html')
     );
     
     if (invalidFiles.length > 0) {
       alert(`Some files are invalid:\n${invalidFiles.map(f => f.name).join('\n')}`);
+      return;
+    }
+
+    // Calculate total size
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalSize > MAX_FILE_SIZE) {
+      alert(`Total file size (${formatFileSize(totalSize)}) exceeds maximum allowed size (${formatFileSize(MAX_FILE_SIZE)})`);
       return;
     }
 
@@ -119,8 +142,20 @@ function App() {
     files.forEach(file => formData.append('files', file));
 
     try {
-      console.log('Uploading files...');
-      const uploadResponse = await axios.post(`${API_URL}/upload`, formData);
+      console.log('Uploading files...', {
+        fileCount: files.length,
+        totalSize: formatFileSize(totalSize),
+        fileNames: files.map(f => f.name)
+      });
+
+      const uploadResponse = await axios.post(`${API_URL}/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        },
+        maxContentLength: MAX_FILE_SIZE,
+        maxBodyLength: MAX_FILE_SIZE
+      });
+
       console.log('Upload response:', uploadResponse.data);
       setUploadedFiles(files.map(f => f.name));
 
@@ -139,13 +174,19 @@ function App() {
       console.log('Analysis response:', analysisResponse.data);
       setAnalysisResults(analysisResponse.data);
     } catch (error) {
-      console.error('Error details:', error.response?.data || error.message);
+      console.error('Error details:', error);
       let errorMessage = 'Error uploading or analyzing files.';
       
-      if (error.response?.data?.error) {
+      if (error.response?.status === 413) {
+        errorMessage = `File size too large. Maximum allowed size is ${formatFileSize(MAX_FILE_SIZE)}.`;
+      } else if (error.response?.data?.error) {
         errorMessage = `Server Error: ${error.response.data.error}`;
       } else if (error.message) {
         errorMessage = `Error: ${error.message}`;
+      }
+      
+      if (error.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error: Unable to connect to the server. Please check your internet connection and try again.';
       }
       
       alert(errorMessage + '\nPlease check the browser console for more details.');

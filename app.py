@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import os
 import logging
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from collections import Counter
 
 # Configure logging
@@ -17,6 +18,10 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 # Get upload folder from environment or default to 'uploads'
 UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
 ALLOWED_EXTENSIONS = {'html'}
+
+# Increase max content length to 100MB
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # Ensure upload directory exists and is writable
 try:
@@ -38,7 +43,6 @@ except Exception as e:
         logger.error("No writable upload directory available")
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB max file size
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -68,6 +72,12 @@ def extract_test_results(report_path):
         logger.error(f"Error extracting test results from {report_path}: {str(e)}")
         raise
 
+@app.errorhandler(RequestEntityTooLarge)
+def handle_large_file(e):
+    return jsonify({
+        "error": f"File too large. Maximum size is {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
+    }), 413
+
 @app.route('/upload', methods=['POST'])
 def upload_files():
     try:
@@ -78,7 +88,8 @@ def upload_files():
         files = request.files.getlist('files')
         saved_files = []
         
-        # Validate files before saving
+        total_size = 0
+        # First, validate all files
         for file in files:
             if not file:
                 logger.error("Empty file object received")
@@ -92,7 +103,28 @@ def upload_files():
                 logger.error(f"Invalid file type: {file.filename}")
                 continue
             
+            # Check file size
+            file.seek(0, 2)  # Seek to end of file
+            size = file.tell()
+            file.seek(0)  # Reset file pointer
+            total_size += size
+            
+            if size > MAX_CONTENT_LENGTH:
+                return jsonify({
+                    "error": f"File {file.filename} is too large. Maximum size is {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
+                }), 413
+        
+        if total_size > MAX_CONTENT_LENGTH:
+            return jsonify({
+                "error": f"Total file size ({total_size // (1024 * 1024)}MB) exceeds maximum allowed size ({MAX_CONTENT_LENGTH // (1024 * 1024)}MB)"
+            }), 413
+            
+        # Now save the files
+        for file in files:
             try:
+                if not file or not file.filename or not allowed_file(file.filename):
+                    continue
+                    
                 # Read a bit of content to verify file is not empty
                 content_start = file.read(1024)
                 if not content_start:
@@ -128,7 +160,15 @@ def upload_files():
             return jsonify({"error": "No valid files were uploaded"}), 400
 
         logger.info(f"Successfully uploaded {len(saved_files)} files")
-        return jsonify({"message": f"{len(saved_files)} files uploaded successfully", "files": saved_files}), 200
+        return jsonify({
+            "message": f"{len(saved_files)} files uploaded successfully",
+            "files": saved_files,
+            "totalSize": total_size
+        }), 200
+    except RequestEntityTooLarge:
+        return jsonify({
+            "error": f"Total upload size exceeds maximum allowed size of {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
+        }), 413
     except Exception as e:
         logger.error(f"Error in upload: {str(e)}")
         return jsonify({"error": f"Upload error: {str(e)}"}), 500
