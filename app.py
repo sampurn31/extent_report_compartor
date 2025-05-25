@@ -2,11 +2,17 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from bs4 import BeautifulSoup
 import os
+import logging
 from werkzeug.utils import secure_filename
 from collections import Counter
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-CORS(app)
+# Allow all origins for now to debug CORS issues
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'html'}
@@ -15,105 +21,132 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB max file size
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_test_results(report_path):
-    with open(report_path, 'r', encoding='utf-8') as file:
-        soup = BeautifulSoup(file, 'lxml')
+    try:
+        logger.debug(f"Reading file: {report_path}")
+        with open(report_path, 'r', encoding='utf-8') as file:
+            soup = BeautifulSoup(file, 'lxml')
 
-    test_results = []
-    test_items = soup.find_all("li", class_="test-item")
+        test_results = []
+        test_items = soup.find_all("li", class_="test-item")
+        logger.debug(f"Found {len(test_items)} test items")
 
-    for item in test_items:
-        status = item.get("status", "").lower()
-        name_tag = item.find("p", class_="name")
-        if name_tag:
-            test_name = name_tag.text.strip()
-            test_results.append({
-                "name": test_name,
-                "status": status
-            })
+        for item in test_items:
+            status = item.get("status", "").lower()
+            name_tag = item.find("p", class_="name")
+            if name_tag:
+                test_name = name_tag.text.strip()
+                test_results.append({
+                    "name": test_name,
+                    "status": status
+                })
 
-    return test_results
+        return test_results
+    except Exception as e:
+        logger.error(f"Error extracting test results from {report_path}: {str(e)}")
+        raise
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    if 'files' not in request.files:
-        return jsonify({"error": "No files provided"}), 400
+    try:
+        if 'files' not in request.files:
+            logger.error("No files in request")
+            return jsonify({"error": "No files provided"}), 400
 
-    files = request.files.getlist('files')
-    saved_files = []
+        files = request.files.getlist('files')
+        saved_files = []
 
-    for file in files:
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            saved_files.append(filepath)
+        for file in files:
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                logger.debug(f"Saving file to: {filepath}")
+                file.save(filepath)
+                saved_files.append(filepath)
 
-    return jsonify({"message": f"{len(saved_files)} files uploaded successfully"}), 200
+        logger.info(f"Successfully uploaded {len(saved_files)} files")
+        return jsonify({"message": f"{len(saved_files)} files uploaded successfully", "files": saved_files}), 200
+    except Exception as e:
+        logger.error(f"Error in upload: {str(e)}")
+        return jsonify({"error": f"Upload error: {str(e)}"}), 500
 
 @app.route('/analyze', methods=['POST'])
 def analyze_reports():
-    report_paths = request.json.get('reportPaths', [])
-    if not report_paths:
-        return jsonify({"error": "No report paths provided"}), 400
+    try:
+        report_paths = request.json.get('reportPaths', [])
+        logger.debug(f"Analyzing reports: {report_paths}")
+        
+        if not report_paths:
+            return jsonify({"error": "No report paths provided"}), 400
 
-    all_results = {}
-    for path in report_paths:
-        try:
-            results = extract_test_results(path)
-            all_results[os.path.basename(path)] = results
-        except Exception as e:
-            return jsonify({"error": f"Error processing {path}: {str(e)}"}), 500
+        all_results = {}
+        for path in report_paths:
+            try:
+                # Ensure the file exists
+                if not os.path.exists(path):
+                    logger.error(f"File not found: {path}")
+                    return jsonify({"error": f"File not found: {path}"}), 404
+                
+                results = extract_test_results(path)
+                all_results[os.path.basename(path)] = results
+            except Exception as e:
+                logger.error(f"Error processing {path}: {str(e)}")
+                return jsonify({"error": f"Error processing {path}: {str(e)}"}), 500
 
-    # Find failing tests across all reports
-    failing_tests = {}
-    test_failure_count = Counter()  # Track failure count for each test
-    test_execution_count = Counter()  # Track total executions for each test
-    
-    for report_name, results in all_results.items():
-        for test in results:
-            test_execution_count[test["name"]] += 1
-            if test["status"] == "fail":
-                if test["name"] not in failing_tests:
-                    failing_tests[test["name"]] = []
-                failing_tests[test["name"]].append(report_name)
-                test_failure_count[test["name"]] += 1
+        # Find failing tests across all reports
+        failing_tests = {}
+        test_failure_count = Counter()  # Track failure count for each test
+        test_execution_count = Counter()  # Track total executions for each test
+        
+        for report_name, results in all_results.items():
+            for test in results:
+                test_execution_count[test["name"]] += 1
+                if test["status"] == "fail":
+                    if test["name"] not in failing_tests:
+                        failing_tests[test["name"]] = []
+                    failing_tests[test["name"]].append(report_name)
+                    test_failure_count[test["name"]] += 1
 
-    # Calculate failure rates and create sorted lists
-    test_stats = []
-    for test_name in test_execution_count:
-        failure_rate = (test_failure_count[test_name] / test_execution_count[test_name]) * 100
-        test_stats.append({
-            "name": test_name,
-            "failureCount": test_failure_count[test_name],
-            "executionCount": test_execution_count[test_name],
-            "failureRate": round(failure_rate, 2)
-        })
+        # Calculate failure rates and create sorted lists
+        test_stats = []
+        for test_name in test_execution_count:
+            failure_rate = (test_failure_count[test_name] / test_execution_count[test_name]) * 100
+            test_stats.append({
+                "name": test_name,
+                "failureCount": test_failure_count[test_name],
+                "executionCount": test_execution_count[test_name],
+                "failureRate": round(failure_rate, 2)
+            })
 
-    # Sort test stats by different criteria
-    sorted_by_failure_count = sorted(test_stats, key=lambda x: x["failureCount"], reverse=True)
-    sorted_by_failure_rate = sorted(test_stats, key=lambda x: x["failureRate"], reverse=True)
+        # Sort test stats by different criteria
+        sorted_by_failure_count = sorted(test_stats, key=lambda x: x["failureCount"], reverse=True)
+        sorted_by_failure_rate = sorted(test_stats, key=lambda x: x["failureRate"], reverse=True)
 
-    # Get test status across all reports
-    test_status_map = {}
-    for report_name, results in all_results.items():
-        for test in results:
-            if test["name"] not in test_status_map:
-                test_status_map[test["name"]] = {}
-            test_status_map[test["name"]][report_name] = test["status"]
+        # Get test status across all reports
+        test_status_map = {}
+        for report_name, results in all_results.items():
+            for test in results:
+                if test["name"] not in test_status_map:
+                    test_status_map[test["name"]] = {}
+                test_status_map[test["name"]][report_name] = test["status"]
 
-    return jsonify({
-        "failingTests": failing_tests,
-        "testStatusMap": test_status_map,
-        "testStats": {
-            "byFailureCount": sorted_by_failure_count,
-            "byFailureRate": sorted_by_failure_rate
-        }
-    }), 200
+        logger.info("Analysis completed successfully")
+        return jsonify({
+            "failingTests": failing_tests,
+            "testStatusMap": test_status_map,
+            "testStats": {
+                "byFailureCount": sorted_by_failure_count,
+                "byFailureRate": sorted_by_failure_rate
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f"Error in analysis: {str(e)}")
+        return jsonify({"error": f"Analysis error: {str(e)}"}), 500
 
 @app.route('/search', methods=['POST'])
 def search_test():

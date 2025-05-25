@@ -91,26 +91,30 @@ function App() {
     files.forEach(file => formData.append('files', file));
 
     try {
-      const response = await axios.post(`${API_URL}/upload`, formData);
+      console.log('Uploading files...');
+      const uploadResponse = await axios.post(`${API_URL}/upload`, formData);
+      console.log('Upload response:', uploadResponse.data);
       setUploadedFiles(files.map(f => f.name));
-      await analyzeReports();
+
+      // Get the saved file paths from the response
+      const savedFiles = uploadResponse.data.files;
+      console.log('Saved files:', savedFiles);
+
+      // Use the saved file paths for analysis
+      const analysisResponse = await axios.post(`${API_URL}/analyze`, {
+        reportPaths: savedFiles
+      });
+      console.log('Analysis response:', analysisResponse.data);
+      setAnalysisResults(analysisResponse.data);
     } catch (error) {
-      console.error('Upload error:', error);
-      alert('Error uploading files');
+      console.error('Error details:', error.response?.data || error.message);
+      if (error.response?.data?.error) {
+        alert(`Error: ${error.response.data.error}`);
+      } else {
+        alert('Error uploading or analyzing files. Please check the console for details.');
+      }
     } finally {
       setLoading(false);
-    }
-  };
-
-  const analyzeReports = async () => {
-    try {
-      const response = await axios.post(`${API_URL}/analyze`, {
-        reportPaths: files.map(f => `uploads/${f.name}`)
-      });
-      setAnalysisResults(response.data);
-    } catch (error) {
-      console.error('Analysis error:', error);
-      alert('Error analyzing reports');
     }
   };
 
