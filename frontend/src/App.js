@@ -52,7 +52,25 @@ function App() {
 
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files);
-    const newFiles = [...files, ...selectedFiles];
+    
+    // Validate file size and content
+    const validFiles = selectedFiles.filter(file => {
+      if (file.size === 0) {
+        alert(`File ${file.name} is empty. Please select a valid file.`);
+        return false;
+      }
+      if (file.size > 32 * 1024 * 1024) {
+        alert(`File ${file.name} is too large. Maximum size is 32MB.`);
+        return false;
+      }
+      if (!file.name.toLowerCase().endsWith('.html')) {
+        alert(`File ${file.name} is not an HTML file.`);
+        return false;
+      }
+      return true;
+    });
+
+    const newFiles = [...files, ...validFiles];
     
     if (newFiles.length > numReports) {
       alert(`You can only select up to ${numReports} files. Please remove some files first.`);
@@ -86,6 +104,16 @@ function App() {
       return;
     }
 
+    // Validate files again before upload
+    const invalidFiles = files.filter(file => 
+      file.size === 0 || file.size > 32 * 1024 * 1024 || !file.name.toLowerCase().endsWith('.html')
+    );
+    
+    if (invalidFiles.length > 0) {
+      alert(`Some files are invalid:\n${invalidFiles.map(f => f.name).join('\n')}`);
+      return;
+    }
+
     setLoading(true);
     const formData = new FormData();
     files.forEach(file => formData.append('files', file));
@@ -100,6 +128,10 @@ function App() {
       const savedFiles = uploadResponse.data.files;
       console.log('Saved files:', savedFiles);
 
+      if (!savedFiles || savedFiles.length === 0) {
+        throw new Error('No files were successfully uploaded');
+      }
+
       // Use the saved file paths for analysis
       const analysisResponse = await axios.post(`${API_URL}/analyze`, {
         reportPaths: savedFiles
@@ -108,11 +140,15 @@ function App() {
       setAnalysisResults(analysisResponse.data);
     } catch (error) {
       console.error('Error details:', error.response?.data || error.message);
+      let errorMessage = 'Error uploading or analyzing files.';
+      
       if (error.response?.data?.error) {
-        alert(`Error: ${error.response.data.error}`);
-      } else {
-        alert('Error uploading or analyzing files. Please check the console for details.');
+        errorMessage = `Server Error: ${error.response.data.error}`;
+      } else if (error.message) {
+        errorMessage = `Error: ${error.message}`;
       }
+      
+      alert(errorMessage + '\nPlease check the browser console for more details.');
     } finally {
       setLoading(false);
     }

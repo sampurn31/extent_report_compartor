@@ -14,11 +14,28 @@ app = Flask(__name__)
 # Allow all origins for now to debug CORS issues
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
-UPLOAD_FOLDER = 'uploads'
+# Get upload folder from environment or default to 'uploads'
+UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
 ALLOWED_EXTENSIONS = {'html'}
 
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# Ensure upload directory exists and is writable
+try:
+    if not os.path.exists(UPLOAD_FOLDER):
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    # Test write permissions
+    test_file = os.path.join(UPLOAD_FOLDER, 'test.txt')
+    with open(test_file, 'w') as f:
+        f.write('test')
+    os.remove(test_file)
+    logger.info(f"Upload directory {UPLOAD_FOLDER} is ready and writable")
+except Exception as e:
+    logger.error(f"Error setting up upload directory: {str(e)}")
+    # Fall back to /tmp if available
+    if os.path.exists('/tmp') and os.access('/tmp', os.W_OK):
+        UPLOAD_FOLDER = '/tmp'
+        logger.info("Falling back to /tmp directory")
+    else:
+        logger.error("No writable upload directory available")
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB max file size
@@ -60,14 +77,55 @@ def upload_files():
 
         files = request.files.getlist('files')
         saved_files = []
-
+        
+        # Validate files before saving
         for file in files:
-            if file and allowed_file(file.filename):
+            if not file:
+                logger.error("Empty file object received")
+                continue
+                
+            if not file.filename:
+                logger.error("Empty filename received")
+                continue
+                
+            if not allowed_file(file.filename):
+                logger.error(f"Invalid file type: {file.filename}")
+                continue
+            
+            try:
+                # Read a bit of content to verify file is not empty
+                content_start = file.read(1024)
+                if not content_start:
+                    logger.error(f"Empty file content: {file.filename}")
+                    continue
+                    
+                # Reset file pointer to start
+                file.seek(0)
+                
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 logger.debug(f"Saving file to: {filepath}")
+                
+                # Verify directory exists and is writable
+                if not os.path.exists(app.config['UPLOAD_FOLDER']):
+                    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+                    
                 file.save(filepath)
+                
+                # Verify file was actually saved
+                if not os.path.exists(filepath):
+                    logger.error(f"File was not saved: {filepath}")
+                    continue
+                    
                 saved_files.append(filepath)
+                logger.info(f"Successfully saved file: {filepath}")
+                
+            except Exception as e:
+                logger.error(f"Error saving file {file.filename}: {str(e)}")
+                continue
+
+        if not saved_files:
+            return jsonify({"error": "No valid files were uploaded"}), 400
 
         logger.info(f"Successfully uploaded {len(saved_files)} files")
         return jsonify({"message": f"{len(saved_files)} files uploaded successfully", "files": saved_files}), 200
