@@ -1,7 +1,5 @@
 flask==3.0.2
-beautifulsoup4==4.12.3
-lxml==5.4.0
 flask-cors==4.0.0
-python-dotenv==1.0.1
-gunicorn==21.2.0
+beautifulsoup4==4.12.3
+lxml==5.1.0
 Werkzeug==3.0.1 

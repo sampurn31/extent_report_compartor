@@ -1,124 +1,132 @@
-# Extent Report Analyzer
+# Extent Report Comparator
 
-A web application for analyzing and comparing multiple Extent reports. This tool helps SDETs and QA teams to identify patterns in test failures and track test results across multiple test runs.
+A web application to compare multiple Extent reports and analyze test results.
 
-## Features
+## Quick Start with Docker (Recommended)
 
-1. Dynamic report comparison - select how many reports you want to compare
-2. Upload and analyze multiple Extent reports
-3. View common failing tests across all reports
-4. Search for specific test cases and see their results across all reports
-5. Modern, user-friendly interface with sorting options
+1. Install Docker and Docker Compose on your system:
+   - Windows/Mac: Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+   - Linux: Install [Docker Engine](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/)
 
-## Local Development Setup
+2. Clone the repository:
+   ```bash
+   git clone https://github.com/sampurn31/extent_report_compartor.git
+   cd extent_report_compartor
+   ```
 
-### Backend (Python Flask)
+3. Start the application:
+   ```bash
+   docker-compose up
+   ```
 
-1. Create a virtual environment (recommended):
+4. Open http://localhost:3000 in your browser
+
+That's it! The application is now running and ready to use.
+
+To stop the application:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+docker-compose down
 ```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+## Manual Setup (Alternative)
 
-3. Run the Flask server:
-```bash
-python app.py
-```
+If you prefer not to use Docker, you can set up the application manually:
 
-The backend server will start at http://localhost:5000
+### Backend Setup
 
-### Frontend (React)
+1. Install Python 3.11 or later
+2. Create a virtual environment:
+   ```bash
+   python -m venv venv
+   ```
+3. Activate the virtual environment:
+   - Windows:
+     ```bash
+     .\venv\Scripts\activate
+     ```
+   - Linux/Mac:
+     ```bash
+     source venv/bin/activate
+     ```
+4. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+5. Run the Flask application:
+   ```bash
+   python app.py
+   ```
+   The backend will run on http://localhost:5000
 
-1. Navigate to the frontend directory:
-```bash
-cd frontend
-```
+### Frontend Setup
 
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Start the development server:
-```bash
-npm start
-```
-
-The frontend application will start at http://localhost:3000
-
-## Deployment Instructions
-
-### Backend Deployment (Render.com)
-
-1. Create a new account on [Render.com](https://render.com)
-
-2. Click "New +" and select "Web Service"
-
-3. Connect your GitHub repository
-
-4. Configure the service:
-   - Name: extent-report-analyzer-api
-   - Environment: Python
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `gunicorn app:app`
-   - Plan: Free
-
-5. Click "Create Web Service"
-
-### Frontend Deployment (Netlify)
-
-1. Create a new account on [Netlify](https://netlify.com)
-
-2. From the Netlify dashboard:
-   - Click "Add new site"
-   - Choose "Import an existing project"
-   - Connect to GitHub and select your repository
-
-3. Configure the build settings:
-   - Base directory: `frontend`
-   - Build command: `npm run build`
-   - Publish directory: `frontend/build`
-
-4. Add environment variable:
-   - Key: `REACT_APP_API_URL`
-   - Value: Your Render.com backend URL (e.g., https://your-app.onrender.com)
-
-5. Click "Deploy site"
-
-### Alternative Frontend Deployment (Vercel)
-
-1. Create a new account on [Vercel](https://vercel.com)
-
-2. Install Vercel CLI:
-```bash
-npm install -g vercel
-```
-
-3. Navigate to the frontend directory and run:
-```bash
-vercel
-```
-
-4. Follow the prompts and add the environment variable:
-   - REACT_APP_API_URL=your-render-backend-url
+1. Install Node.js 18 or later
+2. Navigate to the frontend directory:
+   ```bash
+   cd frontend
+   ```
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+4. Start the development server:
+   ```bash
+   npm start
+   ```
+   The frontend will run on http://localhost:3000
 
 ## Usage
 
-1. Access your deployed application using the Netlify/Vercel URL
-2. Select the number of reports you want to compare
-3. Upload your Extent report HTML files
-4. Use the search and sorting features to analyze test results
+1. Open http://localhost:3000 in your browser
+2. Select the Extent report HTML files you want to compare
+3. Click "Upload and Analyze"
+4. View the comparison results:
+   - Common failing tests
+   - Tests sorted by failure count
+   - Tests sorted by failure rate
+5. Use the search feature to find specific tests
 
-## Notes
+## Features
 
-- The free tier of Render.com may have cold starts
-- The uploads folder is ephemeral on Render.com, files will be cleared periodically
-- For permanent storage, consider adding cloud storage (e.g., AWS S3)
+- Compare multiple Extent reports
+- Analyze test failures across reports
+- Search for specific tests
+- Sort tests by failure count or rate
+- View detailed test status for each report
+- No file size restrictions
+- Fast processing of large HTML files
+
+## Troubleshooting
+
+### Docker Issues
+
+1. If ports are already in use:
+   ```bash
+   Error: listen EADDRINUSE: address already in use :::3000
+   ```
+   Solution: Stop any other applications using ports 3000 or 5000
+
+2. If Docker containers fail to start:
+   ```bash
+   docker-compose down
+   docker-compose up --build
+   ```
+
+3. To view logs:
+   ```bash
+   docker-compose logs -f
+   ```
+
+### Common Issues
+
+1. "Network Error" when uploading files:
+   - Check if both frontend and backend are running
+   - Ensure files are valid Extent report HTML files
+   - Try with smaller files first
+
+2. "No test results found":
+   - Verify that the HTML files are valid Extent reports
+   - Check if the files contain test results in the expected format
 
 ## For SDETs
 
