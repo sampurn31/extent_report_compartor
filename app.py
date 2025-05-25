@@ -3,63 +3,53 @@ from flask_cors import CORS
 from bs4 import BeautifulSoup
 import os
 import logging
-from werkzeug.utils import secure_filename
-from werkzeug.exceptions import RequestEntityTooLarge
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Thread-local storage for BeautifulSoup parser
+thread_local = threading.local()
+
 app = Flask(__name__)
-# Allow all origins for now to debug CORS issues
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app)
 
-# Get upload folder from environment or default to 'uploads'
-UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
-ALLOWED_EXTENSIONS = {'html'}
-
-# Increase max content length to 100MB
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
-
-# Ensure upload directory exists and is writable
-try:
-    if not os.path.exists(UPLOAD_FOLDER):
-        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    # Test write permissions
-    test_file = os.path.join(UPLOAD_FOLDER, 'test.txt')
-    with open(test_file, 'w') as f:
-        f.write('test')
-    os.remove(test_file)
-    logger.info(f"Upload directory {UPLOAD_FOLDER} is ready and writable")
-except Exception as e:
-    logger.error(f"Error setting up upload directory: {str(e)}")
-    # Fall back to /tmp if available
-    if os.path.exists('/tmp') and os.access('/tmp', os.W_OK):
-        UPLOAD_FOLDER = '/tmp'
-        logger.info("Falling back to /tmp directory")
-    else:
-        logger.error("No writable upload directory available")
+# Setup upload folder
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+MAX_WORKERS = 4  # Adjust based on your CPU cores
+
+def get_parser():
+    if not hasattr(thread_local, "parser"):
+        thread_local.parser = "lxml"
+    return thread_local.parser
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return filename.lower().endswith('.html')
 
 def extract_test_results(report_path):
     try:
         logger.debug(f"Reading file: {report_path}")
         with open(report_path, 'r', encoding='utf-8') as file:
-            soup = BeautifulSoup(file, 'lxml')
+            # Use thread-local parser instance
+            soup = BeautifulSoup(file, get_parser())
 
-        test_results = []
-        test_items = soup.find_all("li", class_="test-item")
+        # Use CSS selector for faster selection
+        test_items = soup.select("li.test-item")
         logger.debug(f"Found {len(test_items)} test items")
 
+        # Pre-allocate list for better performance
+        test_results = []
         for item in test_items:
             status = item.get("status", "").lower()
-            name_tag = item.find("p", class_="name")
+            # Use direct selector instead of find
+            name_tag = item.select_one("p.name")
             if name_tag:
                 test_name = name_tag.text.strip()
                 test_results.append({
@@ -67,173 +57,99 @@ def extract_test_results(report_path):
                     "status": status
                 })
 
-        return test_results
+        return report_path, test_results
     except Exception as e:
         logger.error(f"Error extracting test results from {report_path}: {str(e)}")
         raise
-
-@app.errorhandler(RequestEntityTooLarge)
-def handle_large_file(e):
-    return jsonify({
-        "error": f"File too large. Maximum size is {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
-    }), 413
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
     try:
         if 'files' not in request.files:
-            logger.error("No files in request")
             return jsonify({"error": "No files provided"}), 400
 
         files = request.files.getlist('files')
         saved_files = []
-        
-        total_size = 0
-        # First, validate all files
+
         for file in files:
-            if not file:
-                logger.error("Empty file object received")
-                continue
-                
-            if not file.filename:
-                logger.error("Empty filename received")
-                continue
-                
-            if not allowed_file(file.filename):
-                logger.error(f"Invalid file type: {file.filename}")
-                continue
-            
-            # Check file size
-            file.seek(0, 2)  # Seek to end of file
-            size = file.tell()
-            file.seek(0)  # Reset file pointer
-            total_size += size
-            
-            if size > MAX_CONTENT_LENGTH:
-                return jsonify({
-                    "error": f"File {file.filename} is too large. Maximum size is {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
-                }), 413
-        
-        if total_size > MAX_CONTENT_LENGTH:
-            return jsonify({
-                "error": f"Total file size ({total_size // (1024 * 1024)}MB) exceeds maximum allowed size ({MAX_CONTENT_LENGTH // (1024 * 1024)}MB)"
-            }), 413
-            
-        # Now save the files
-        for file in files:
-            try:
-                if not file or not file.filename or not allowed_file(file.filename):
-                    continue
-                    
-                # Read a bit of content to verify file is not empty
-                content_start = file.read(1024)
-                if not content_start:
-                    logger.error(f"Empty file content: {file.filename}")
-                    continue
-                    
-                # Reset file pointer to start
-                file.seek(0)
-                
-                filename = secure_filename(file.filename)
+            if file and file.filename and allowed_file(file.filename):
+                filename = file.filename
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                logger.debug(f"Saving file to: {filepath}")
-                
-                # Verify directory exists and is writable
-                if not os.path.exists(app.config['UPLOAD_FOLDER']):
-                    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-                    
                 file.save(filepath)
-                
-                # Verify file was actually saved
-                if not os.path.exists(filepath):
-                    logger.error(f"File was not saved: {filepath}")
-                    continue
-                    
                 saved_files.append(filepath)
-                logger.info(f"Successfully saved file: {filepath}")
-                
-            except Exception as e:
-                logger.error(f"Error saving file {file.filename}: {str(e)}")
-                continue
 
         if not saved_files:
             return jsonify({"error": "No valid files were uploaded"}), 400
 
-        logger.info(f"Successfully uploaded {len(saved_files)} files")
         return jsonify({
             "message": f"{len(saved_files)} files uploaded successfully",
-            "files": saved_files,
-            "totalSize": total_size
+            "files": saved_files
         }), 200
-    except RequestEntityTooLarge:
-        return jsonify({
-            "error": f"Total upload size exceeds maximum allowed size of {MAX_CONTENT_LENGTH // (1024 * 1024)}MB"
-        }), 413
     except Exception as e:
         logger.error(f"Error in upload: {str(e)}")
-        return jsonify({"error": f"Upload error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/analyze', methods=['POST'])
 def analyze_reports():
     try:
         report_paths = request.json.get('reportPaths', [])
-        logger.debug(f"Analyzing reports: {report_paths}")
-        
         if not report_paths:
             return jsonify({"error": "No report paths provided"}), 400
 
+        # Validate all files exist before processing
+        missing_files = [path for path in report_paths if not os.path.exists(path)]
+        if missing_files:
+            return jsonify({"error": f"Files not found: {', '.join(missing_files)}"}), 404
+
         all_results = {}
-        for path in report_paths:
-            try:
-                # Ensure the file exists
-                if not os.path.exists(path):
-                    logger.error(f"File not found: {path}")
-                    return jsonify({"error": f"File not found: {path}"}), 404
-                
-                results = extract_test_results(path)
-                all_results[os.path.basename(path)] = results
-            except Exception as e:
-                logger.error(f"Error processing {path}: {str(e)}")
-                return jsonify({"error": f"Error processing {path}: {str(e)}"}), 500
-
-        # Find failing tests across all reports
         failing_tests = {}
-        test_failure_count = Counter()  # Track failure count for each test
-        test_execution_count = Counter()  # Track total executions for each test
-        
-        for report_name, results in all_results.items():
-            for test in results:
-                test_execution_count[test["name"]] += 1
-                if test["status"] == "fail":
-                    if test["name"] not in failing_tests:
-                        failing_tests[test["name"]] = []
-                    failing_tests[test["name"]].append(report_name)
-                    test_failure_count[test["name"]] += 1
+        test_failure_count = Counter()
+        test_execution_count = Counter()
+        test_status_map = {}
 
-        # Calculate failure rates and create sorted lists
-        test_stats = []
-        for test_name in test_execution_count:
-            failure_rate = (test_failure_count[test_name] / test_execution_count[test_name]) * 100
-            test_stats.append({
-                "name": test_name,
-                "failureCount": test_failure_count[test_name],
-                "executionCount": test_execution_count[test_name],
-                "failureRate": round(failure_rate, 2)
-            })
+        # Process files in parallel
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_path = {executor.submit(extract_test_results, path): path for path in report_paths}
+            
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                report_name = os.path.basename(path)
+                try:
+                    _, results = future.result()
+                    all_results[report_name] = results
 
-        # Sort test stats by different criteria
+                    # Process results in a single pass
+                    for test in results:
+                        test_name = test["name"]
+                        test_execution_count[test_name] += 1
+                        
+                        # Update test status map
+                        if test_name not in test_status_map:
+                            test_status_map[test_name] = {}
+                        test_status_map[test_name][report_name] = test["status"]
+                        
+                        if test["status"] == "fail":
+                            if test_name not in failing_tests:
+                                failing_tests[test_name] = []
+                            failing_tests[test_name].append(report_name)
+                            test_failure_count[test_name] += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing {path}: {str(e)}")
+                    return jsonify({"error": f"Error processing {report_name}: {str(e)}"}), 500
+
+        # Calculate statistics in a single pass
+        test_stats = [{
+            "name": test_name,
+            "failureCount": test_failure_count[test_name],
+            "executionCount": count,
+            "failureRate": round((test_failure_count[test_name] / count) * 100, 2)
+        } for test_name, count in test_execution_count.items()]
+
+        # Sort results
         sorted_by_failure_count = sorted(test_stats, key=lambda x: x["failureCount"], reverse=True)
         sorted_by_failure_rate = sorted(test_stats, key=lambda x: x["failureRate"], reverse=True)
 
-        # Get test status across all reports
-        test_status_map = {}
-        for report_name, results in all_results.items():
-            for test in results:
-                if test["name"] not in test_status_map:
-                    test_status_map[test["name"]] = {}
-                test_status_map[test["name"]][report_name] = test["status"]
-
-        logger.info("Analysis completed successfully")
         return jsonify({
             "failingTests": failing_tests,
             "testStatusMap": test_status_map,
@@ -244,53 +160,7 @@ def analyze_reports():
         }), 200
     except Exception as e:
         logger.error(f"Error in analysis: {str(e)}")
-        return jsonify({"error": f"Analysis error: {str(e)}"}), 500
-
-@app.route('/search', methods=['POST'])
-def search_test():
-    test_name = request.json.get('testName', '').lower()
-    report_paths = request.json.get('reportPaths', [])
-
-    if not test_name or not report_paths:
-        return jsonify({"error": "Test name and report paths are required"}), 400
-
-    results = {}
-    test_stats = {}
-    
-    for path in report_paths:
-        try:
-            all_tests = extract_test_results(path)
-            report_name = os.path.basename(path)
-            
-            for test in all_tests:
-                if test_name in test["name"].lower():
-                    test_key = test["name"]
-                    if test_key not in results:
-                        results[test_key] = {}
-                        test_stats[test_key] = {"pass": 0, "fail": 0, "total": 0}
-                    
-                    results[test_key][report_name] = test["status"]
-                    test_stats[test_key][test["status"]] += 1
-                    test_stats[test_key]["total"] += 1
-                    
-        except Exception as e:
-            return jsonify({"error": f"Error processing {path}: {str(e)}"}), 500
-
-    # Calculate failure rates for searched tests
-    search_stats = []
-    for test_name, stats in test_stats.items():
-        failure_rate = (stats["fail"] / stats["total"]) * 100 if stats["total"] > 0 else 0
-        search_stats.append({
-            "name": test_name,
-            "failureCount": stats["fail"],
-            "executionCount": stats["total"],
-            "failureRate": round(failure_rate, 2)
-        })
-
-    return jsonify({
-        "results": results,
-        "stats": sorted(search_stats, key=lambda x: x["failureRate"], reverse=True)
-    }), 200
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True) 
+    app.run(debug=True, host='0.0.0.0') 

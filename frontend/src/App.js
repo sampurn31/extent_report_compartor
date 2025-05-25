@@ -35,10 +35,8 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 
-// Determine API URL based on environment
-const API_URL = window.location.hostname === 'localhost' 
-  ? 'http://localhost:5000'  // Development
-  : 'https://extent-report-compare.onrender.com';  // Production
+// Update the API_URL to always use localhost
+const API_URL = 'http://localhost:5000';
 const DRAWER_WIDTH = 400;
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
