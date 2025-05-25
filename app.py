@@ -6,6 +6,7 @@ import logging
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -62,6 +63,64 @@ def extract_test_results(report_path):
         logger.error(f"Error extracting test results from {report_path}: {str(e)}")
         raise
 
+def search_test_results(test_name, report_paths):
+    """Search for a specific test across all reports."""
+    try:
+        results = {}
+        test_failure_count = 0
+        test_execution_count = 0
+        
+        # Process files in parallel
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_path = {executor.submit(extract_test_results, path): path for path in report_paths}
+            
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                report_name = os.path.basename(path)
+                try:
+                    _, test_results = future.result()
+                    
+                    # Search for matching tests
+                    pattern = re.compile(test_name, re.IGNORECASE)
+                    matching_tests = [test for test in test_results if pattern.search(test["name"])]
+                    
+                    for test in matching_tests:
+                        if test["name"] not in results:
+                            results[test["name"]] = {}
+                        results[test["name"]][report_name] = test["status"]
+                        test_execution_count += 1
+                        if test["status"] == "fail":
+                            test_failure_count += 1
+                            
+                except Exception as e:
+                    logger.error(f"Error searching in {path}: {str(e)}")
+                    continue
+
+        # Calculate statistics for matching tests
+        stats = []
+        for test_name, statuses in results.items():
+            execution_count = len(statuses)
+            failure_count = sum(1 for status in statuses.values() if status == "fail")
+            failure_rate = (failure_count / execution_count * 100) if execution_count > 0 else 0
+            
+            stats.append({
+                "name": test_name,
+                "failureCount": failure_count,
+                "executionCount": execution_count,
+                "failureRate": round(failure_rate, 2)
+            })
+        
+        # Sort stats by failure count
+        stats.sort(key=lambda x: x["failureCount"], reverse=True)
+        
+        return {
+            "results": results,
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Error in search: {str(e)}")
+        raise
+
 @app.route('/upload', methods=['POST'])
 def upload_files():
     try:
@@ -87,6 +146,30 @@ def upload_files():
         }), 200
     except Exception as e:
         logger.error(f"Error in upload: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/search', methods=['POST'])
+def search():
+    try:
+        data = request.json
+        test_name = data.get('testName')
+        report_paths = data.get('reportPaths', [])
+
+        if not test_name:
+            return jsonify({"error": "No test name provided"}), 400
+        if not report_paths:
+            return jsonify({"error": "No report paths provided"}), 400
+
+        # Validate all files exist
+        missing_files = [path for path in report_paths if not os.path.exists(path)]
+        if missing_files:
+            return jsonify({"error": f"Files not found: {', '.join(missing_files)}"}), 404
+
+        results = search_test_results(test_name, report_paths)
+        return jsonify(results), 200
+
+    except Exception as e:
+        logger.error(f"Error in search: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/analyze', methods=['POST'])
